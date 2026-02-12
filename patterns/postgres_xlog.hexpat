@@ -6,6 +6,8 @@
 #define XLR_MAX_BLOCK_ID 32
 #define XLR_BLOCK_ID_DATA_SHORT   255
 #define XLR_BLOCK_ID_DATA_LONG    254
+#define XLR_BLOCK_ID_ORIGIN       253
+#define XLR_BLOCK_ID_TOPLEVEL_XID 252
 #define XLR_INFO_MASK    0x0f
 
 #define XLOG_CHECKPOINT_SHUTDOWN        0x00
@@ -243,7 +245,8 @@ using RmgrId;
 
 // Global variables
 u32 globalPageSize = 8192;
-u32 main_data_length;
+u32 main_fragment_length;
+u32 data_total;
 u8 rmgr_info;
 RmgrId rmgr_id;
 u8 current_block;
@@ -551,22 +554,38 @@ struct XLogRecordBlockImageHeader {
 // XLog Record //
 
 struct BlockHeader {
-    u8 id;
     ForkFlags fork_flags;
     u16 data_length;
+    data_total += data_length;
     if (fork_flags.has_image == 1) {
         XLogRecordBlockImageHeader image_header;
+        data_total += image_header.length;
     }
     if (fork_flags.same_rel == 0) {
         RelFileLocator rel_file_locator;
     }
     BlockNumber block_number;
-};
+} [[inline]];
 
-struct BlockData {
-  // TODO: More precise block content?
-  u8 block_content[parent.block_headers[current_block].data_length];
-  current_block = current_block + 1;
+struct FragmentHeader {
+    u8 id;
+    if (id == XLR_BLOCK_ID_DATA_SHORT) {
+      u8 data_length;
+      main_fragment_length = data_length;
+      data_total += data_length;
+    } else if (id == XLR_BLOCK_ID_DATA_LONG) {
+      u32 data_length;
+      main_fragment_length = data_length;
+      data_total += data_length;
+    } else if (id == XLR_BLOCK_ID_ORIGIN) {
+      u16 record_origin;
+    } else if (id == XLR_BLOCK_ID_TOPLEVEL_XID) {
+      TransactionId toplevel_xid;
+    } else if (id < XLR_MAX_BLOCK_ID) {
+      BlockHeader block_header;
+    } else {
+        std::error(std::format("Unknown data FragmentHeader: {} at pos 0x{:x}", id, $));
+    }
 };
 
 bitfield XLogRecordInfoFlags {
@@ -578,11 +597,6 @@ bitfield XLogRecordInfoFlags {
 
 struct MainDataHeader {
     u8 id;
-    if (id == XLR_BLOCK_ID_DATA_SHORT) {
-      u8 data_length;
-    } else if (id == XLR_BLOCK_ID_DATA_LONG) {
-      u32 data_length;
-    }
 };
 
 // Main data //
@@ -1388,9 +1402,7 @@ struct xl_logical_message {
     u8 message[1]; // variable: prefix + payload
 };
 
-// Main data //
-
-struct MainData {
+struct MainFragment {
     u8 info = rmgr_info & ~XLR_INFO_MASK;
     auto start_address = $;
     match (rmgr_id) {
@@ -1580,8 +1592,22 @@ struct MainData {
         }
       }
     }
-    padding[main_data_length - ($ - start_address)];
+    padding[main_fragment_length - ($ - start_address)];
 } [[inline]];
+
+struct FragmentData {
+  // TODO: More precise block content
+  if (parent.header_fragments[current_block].id < XLR_MAX_BLOCK_ID) {
+    u8 block_content[parent.header_fragments[current_block].block_header.data_length];
+    if (parent.header_fragments[current_block].block_header.fork_flags.has_image) {
+      u8 backup_image[parent.header_fragments[current_block].block_header.image_header.length];
+    }
+  } else if (parent.header_fragments[current_block].id == XLR_BLOCK_ID_DATA_SHORT
+            || parent.header_fragments[current_block].id == XLR_BLOCK_ID_DATA_LONG) {
+    MainFragment main_fragment;
+  }
+  current_block = current_block + 1;
+};
 
 struct XLogRecord {
     auto start_address = $;
@@ -1594,6 +1620,7 @@ struct XLogRecord {
     if (xl_tot_len == 0) {
       break;
     }
+    auto end_address = $ + xl_tot_len - 4;
 
     TransactionId xl_xid;
     XLogRecPtr xl_prev;
@@ -1602,24 +1629,18 @@ struct XLogRecord {
     padding[2];
     u32 xl_crc;
 
-    // Headers
-    BlockHeader block_headers[while(std::mem::read_unsigned($, 1) <= XLR_MAX_BLOCK_ID)];
-    MainDataHeader main_data_header;
-
-    // Data block
     current_block = 0;
-    BlockData block_data[std::core::member_count(block_headers)];
-
-    // Main data
+    data_total = 0;
+    main_fragment_length = 0;
     rmgr_id = xl_rmid;
     rmgr_info = xl_info.rmgr_info << 4;
 
-    main_data_length = main_data_header.data_length;
-    MainData main_data;
-    if ($ - start_address < xl_tot_len) {
-      std::print("Invalid record size {} < {}", $ - start_address, xl_tot_len);
-      break;
-    }
+    // Headers
+    FragmentHeader header_fragments[while($ < end_address - data_total)];
+
+    // Data
+    FragmentData fragments[std::core::member_count(header_fragments)];
+
     std::mem::AlignTo<8>;
 } [[format("format_xlog_record")]];
 
@@ -1643,6 +1664,9 @@ struct XLogPage {
   if (xlp_magic == 0) {
     break;
   }
+  if ($ > globalPageSize) {
+    break;
+  }
 
   XLogPageInfoFlags xlp_info;
   TimeLineID xlp_tli;
@@ -1659,7 +1683,8 @@ struct XLogPage {
   }
 
   XLogRecord records[while(true)];
-} [[fixed_size(globalPageSize)]];
+// } [[fixed_size(globalPageSize)]];
+};
 
 // XLogPage page[while (!std::mem::eof())] @ 0x00;
 // XLogPage page[while(std::mem::read_unsigned($, 1) == 0x00)] @ 0x00;

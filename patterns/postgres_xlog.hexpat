@@ -625,51 +625,68 @@ struct xl_running_xacts {
 };
 
 struct SharedInvalCatcacheMsg {
+  s8 id;
+  padding[3];
   Oid dbId;
   u32 hashValue;
 };
 
 struct SharedInvalCatalogMsg {
+  s8 id;
+  padding[3];
   Oid dbId;
   Oid catId;
 };
 
 struct SharedInvalRelcacheMsg {
+  s8 id;
+  padding[3];
   Oid dbId;
   Oid relId;
 };
 
 struct SharedInvalSmgrMsg {
+  s8 id;
   s8 backend_hi;
   u16 backend_lo;
   RelFileLocator rlocator;
 };
 
 struct SharedInvalRelmapMsg {
+  s8 id;
+  padding[3];
   Oid dbId;
 };
 
 struct SharedInvalSnapshotMsg {
+  s8 id;
+  padding[3];
   Oid dbId;
   Oid relId;
 };
 
 struct SharedInvalRelSyncMsg {
+  s8 id;
+  padding[3];
   Oid dbId;
   Oid relid;
 };
 
 struct SharedInvalidationMessage {
-  s8 id;
-  match (id) {
-    (SHAREDINVALCATALOG_ID): SharedInvalCatalogMsg cat;
-    (SHAREDINVALRELCACHE_ID): SharedInvalRelcacheMsg rc;
-    (SHAREDINVALSMGR_ID): SharedInvalSmgrMsg sm;
-    (SHAREDINVALRELMAP_ID): SharedInvalRelmapMsg rm;
-    (SHAREDINVALSNAPSHOT_ID): SharedInvalSnapshotMsg sn;
-    (SHAREDINVALRELSYNC_ID): SharedInvalRelSyncMsg rs;
+  s8 id = std::mem::read_signed($, 1);
+  if (id >= 0) {
+    SharedInvalCatcacheMsg catalog_cache;
+  } else {
+    match (id) {
+      (SHAREDINVALCATALOG_ID): SharedInvalCatalogMsg catalog;
+      (SHAREDINVALRELCACHE_ID): SharedInvalRelcacheMsg rel_cache;
+      (SHAREDINVALSMGR_ID): SharedInvalSmgrMsg smgr;
+      (SHAREDINVALRELMAP_ID): SharedInvalRelmapMsg relmap;
+      (SHAREDINVALSNAPSHOT_ID): SharedInvalSnapshotMsg snapshot;
+      (_): std::error(std::format("Unknown message {}", id));
+    }
   }
-};
+} [[inline, fixed_size(16)]];
 
 struct xl_invalidations {
   Oid dbId;

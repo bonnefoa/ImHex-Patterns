@@ -250,6 +250,7 @@ u32 data_total;
 u8 rmgr_info;
 RmgrId rmgr_id;
 u8 current_block;
+u32 end_page;
 
 
 struct RelFileLocator {
@@ -1611,16 +1612,11 @@ struct FragmentData {
 
 struct XLogRecord {
     auto start_address = $;
-    // Did we reach the end of a page?
-    if ($ % globalPageSize == 0) {
-      break;
-    }
-
     u32 xl_tot_len;
     if (xl_tot_len == 0) {
       break;
     }
-    auto end_address = $ + xl_tot_len - 4;
+    auto end_address = start_address + xl_tot_len;
 
     TransactionId xl_xid;
     XLogRecPtr xl_prev;
@@ -1642,6 +1638,9 @@ struct XLogRecord {
     FragmentData fragments[std::core::member_count(header_fragments)];
 
     std::mem::AlignTo<8>;
+    if ($ + 24 > end_page) {
+      break;
+    }
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {
@@ -1659,15 +1658,13 @@ bitfield XLogPageInfoFlags {
 };
 
 struct XLogPage {
+  auto start_page = $;
+
   // Standard page header
   u16 xlp_magic;
   if (xlp_magic == 0) {
     break;
   }
-  if ($ > globalPageSize) {
-    break;
-  }
-
   XLogPageInfoFlags xlp_info;
   TimeLineID xlp_tli;
   XLogRecPtr xlp_pageaddr;
@@ -1681,10 +1678,10 @@ struct XLogPage {
     u32 xlp_xlog_blcksz;
     globalPageSize = xlp_xlog_blcksz;
   }
-
+  end_page = start_page + globalPageSize;
   XLogRecord records[while(true)];
 // } [[fixed_size(globalPageSize)]];
-};
+} [[fixed_size(globalPageSize)]];
 
 // XLogPage page[while (!std::mem::eof())] @ 0x00;
 // XLogPage page[while(std::mem::read_unsigned($, 1) == 0x00)] @ 0x00;

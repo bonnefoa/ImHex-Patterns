@@ -1615,25 +1615,23 @@ struct MainFragment {
 
 struct FragmentData {
   // TODO: More precise block content
-  if (parent.header_fragments[current_block].id < XLR_MAX_BLOCK_ID) {
-    u8 block_content[parent.header_fragments[current_block].block_header.data_length];
-    if (parent.header_fragments[current_block].block_header.fork_flags.has_image) {
-      u8 backup_image[parent.header_fragments[current_block].block_header.image_header.length];
+  if (parent.fragment_headers[current_block].id < XLR_MAX_BLOCK_ID) {
+    u8 block_content[parent.fragment_headers[current_block].block_header.data_length];
+    if (parent.fragment_headers[current_block].block_header.fork_flags.has_image) {
+      u8 backup_image[parent.fragment_headers[current_block].block_header.image_header.length];
     }
-  } else if (parent.header_fragments[current_block].id == XLR_BLOCK_ID_DATA_SHORT
-            || parent.header_fragments[current_block].id == XLR_BLOCK_ID_DATA_LONG) {
+  } else if (parent.fragment_headers[current_block].id == XLR_BLOCK_ID_DATA_SHORT
+            || parent.fragment_headers[current_block].id == XLR_BLOCK_ID_DATA_LONG) {
     MainFragment main_fragment;
   }
   current_block = current_block + 1;
 };
 
-struct XLogRecord {
-    auto start_address = $;
+struct XLogRecordHeader {
     u32 xl_tot_len;
     if (xl_tot_len == 0) {
       break;
     }
-    auto end_address = start_address + xl_tot_len;
 
     TransactionId xl_xid;
     XLogRecPtr xl_prev;
@@ -1641,27 +1639,31 @@ struct XLogRecord {
     RmgrId xl_rmid;
     padding[2];
     u32 xl_crc;
+};
+
+struct XLogRecord {
+    auto start_address = $;
+    XLogRecordHeader record_header;
+    auto end_address = start_address + record_header.xl_tot_len;
 
     current_block = 0;
     data_total = 0;
     main_fragment_length = 0;
-    rmgr_id = xl_rmid;
-    rmgr_info = xl_info.rmgr_info << 4;
+    rmgr_id = record_header.xl_rmid;
+    rmgr_info = record_header.xl_info.rmgr_info << 4;
 
-    // Headers
-    FragmentHeader header_fragments[while($ < end_address - data_total)];
-
-    // Data
-    FragmentData fragments[std::core::member_count(header_fragments)];
+    FragmentHeader fragment_headers[while($ < end_address - data_total)];
+    FragmentData fragment_datas[std::core::member_count(fragment_headers)];
 
     std::mem::AlignTo<8>;
     if ($ + 24 > end_page) {
+      std::print("End of the page, current offset 0x{:X}, end page at 0x{:X}", $, end_page);
       break;
     }
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {
-    return std::format("{} {}", format_rmgr_id(rec.xl_rmid), rec.xl_rmid);
+    return std::format("{} {}", format_rmgr_id(rec.record_header.xl_rmid), rec.record_header.xl_rmid);
 };
 
 // XLog Page //
@@ -1674,7 +1676,7 @@ bitfield XLogPageInfoFlags {
     reserved            : 12;
 };
 
-struct XLogPage {
+struct XLogPageHeader {
   auto start_page = $;
 
   // Standard page header
@@ -1696,10 +1698,19 @@ struct XLogPage {
     globalPageSize = xlp_xlog_blcksz;
   }
   end_page = start_page + globalPageSize;
+};
+
+struct XLogPage {
+  XLogPageHeader page_header;
+
+  if (page_header.xlp_info.first_is_contrecord) {
+    break;
+  }
+
   XLogRecord records[while(true)];
 // } [[fixed_size(globalPageSize)]];
 } [[fixed_size(globalPageSize)]];
 
 // XLogPage page[while (!std::mem::eof())] @ 0x00;
 // XLogPage page[while(std::mem::read_unsigned($, 1) == 0x00)] @ 0x00;
-XLogPage page @ 0x00;
+XLogPage page[while(true)] @ 0x00;

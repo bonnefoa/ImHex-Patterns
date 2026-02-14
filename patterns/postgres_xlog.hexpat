@@ -227,6 +227,8 @@ import std.core;
 import type.magic;
 import std.mem;
 import type.time;
+import hex.core;
+
 
 using TransactionId = u32;
 using MultiXactId = TransactionId;
@@ -246,11 +248,15 @@ using RmgrId;
 // Global variables
 u32 globalPageSize = 8192;
 u32 main_fragment_length;
+// Total data length of current record
 u32 data_total;
 u8 rmgr_info;
 RmgrId rmgr_id;
 u8 current_block;
 u32 end_page;
+
+u32 buffer_end_addr;
+u32 requested_data;
 
 
 struct RelFileLocator {
@@ -1009,25 +1015,19 @@ struct xl_btree_metadata
 struct xl_btree_insert
 {
 	OffsetNumber offnum;
-
-	/* POSTING SPLIT OFFSET FOLLOWS (INSERT_POST case) */
-	/* NEW TUPLE ALWAYS FOLLOWS AT THE END */
 };
 
 struct xl_btree_split
 {
-	u32		level;			/* tree level of page being split */
+	u32		level;
 	OffsetNumber firstrightoff;
-	/* first origpage item on rightpage */
-	OffsetNumber newitemoff;	/* new item's offset */
-	u16		postingoff;		/* offset inside orig posting tuple */
+	OffsetNumber newitemoff;
+	u16		postingoff;
 };
 
 struct xl_btree_dedup
 {
 	u16		nintervals;
-
-	/* DEDUPLICATION INTERVALS FOLLOW */
 };
 
 struct xl_btree_reuse_page
@@ -1035,7 +1035,7 @@ struct xl_btree_reuse_page
 	RelFileLocator locator;
 	BlockNumber block;
 	FullTransactionId snapshotConflictHorizon;
-	bool		isCatalogRel;	/* to handle recovery conflict during logical decoding on standby */
+	bool		isCatalogRel;
 };
 
 struct xl_btree_vacuum
@@ -1049,8 +1049,7 @@ struct xl_btree_delete
 	TransactionId snapshotConflictHorizon;
 	u16		ndeleted;
 	u16		nupdated;
-	bool		isCatalogRel;	/* to handle recovery conflict during logical
-								 * decoding on standby */
+	bool		isCatalogRel;
 };
 
 struct xl_btree_update
@@ -1062,25 +1061,25 @@ struct xl_btree_update
 
 struct xl_btree_mark_page_halfdead
 {
-	OffsetNumber poffset;		/* deleted tuple id in parent page */
+	OffsetNumber poffset;
 
 	/* information needed to recreate the leaf page: */
-	BlockNumber leafblk;		/* leaf block ultimately being deleted */
-	BlockNumber leftblk;		/* leaf block's left sibling, if any */
-	BlockNumber rightblk;		/* leaf block's right sibling */
-	BlockNumber topparent;		/* topmost internal page in the subtree */
+	BlockNumber leafblk;
+	BlockNumber leftblk;
+	BlockNumber rightblk;
+	BlockNumber topparent;
 };
 
 struct xl_btree_unlink_page
 {
-	BlockNumber leftsib;		/* target block's left sibling, if any */
-	BlockNumber rightsib;		/* target block's right sibling */
-	u32		level;			/* target block's level */
-	FullTransactionId safexid;	/* target block's BTPageSetDeleted() XID */
+	BlockNumber leftsib;
+	BlockNumber rightsib;
+	u32		level;
+	FullTransactionId safexid;
 
 	BlockNumber leafleftsib;
 	BlockNumber leafrightsib;
-	BlockNumber leaftopparent;	/* next child down in the subtree */
+	BlockNumber leaftopparent;
 };
 
 struct xl_btree_unlink_page_meta : xl_btree_unlink_page
@@ -1090,8 +1089,8 @@ struct xl_btree_unlink_page_meta : xl_btree_unlink_page
 
 struct xl_btree_newroot
 {
-	BlockNumber rootblk;		/* location of new root (redundant with blk 0) */
-	u32		level;			/* its tree level */
+	BlockNumber rootblk;
+	u32		level;
 };
 
 struct xl_smgr_create {
@@ -1164,7 +1163,6 @@ struct xl_multixact_truncate {
     MultiXactOffset oldestOffset;
 };
 
-// RelMap (variable: data[nbytes])
 struct xl_relmap_update {
     Oid dbid;
     Oid tsid;
@@ -1643,6 +1641,7 @@ struct XLogRecordHeader {
 
 struct XLogRecord {
     auto start_address = $;
+
     XLogRecordHeader record_header;
     auto end_address = start_address + record_header.xl_tot_len;
 
@@ -1656,10 +1655,6 @@ struct XLogRecord {
     FragmentData fragment_datas[std::core::member_count(fragment_headers)];
 
     std::mem::AlignTo<8>;
-    if ($ + 24 > end_page) {
-      std::print("End of the page, current offset 0x{:X}, end page at 0x{:X}", $, end_page);
-      break;
-    }
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {
@@ -1677,9 +1672,6 @@ bitfield XLogPageInfoFlags {
 };
 
 struct XLogPageHeader {
-  auto start_page = $;
-
-  // Standard page header
   u16 xlp_magic;
   if (xlp_magic == 0) {
     break;
@@ -1697,20 +1689,32 @@ struct XLogPageHeader {
     u32 xlp_xlog_blcksz;
     globalPageSize = xlp_xlog_blcksz;
   }
-  end_page = start_page + globalPageSize;
 };
 
+std::mem::Section page_section;
 struct XLogPage {
+  auto start = $;
   XLogPageHeader page_header;
 
-  if (page_header.xlp_info.first_is_contrecord) {
-    break;
-  }
+  auto available_record_data = globalPageSize - ($ - start);
+  u8 record_data[available_record_data] [[hidden]];
 
-  XLogRecord records[while(true)];
-// } [[fixed_size(globalPageSize)]];
+  // Copy the page content to the virtual file
+  std::mem::copy_value_to_section(record_data, page_section, std::mem::get_section_size(page_section));
 } [[fixed_size(globalPageSize)]];
 
-// XLogPage page[while (!std::mem::eof())] @ 0x00;
-// XLogPage page[while(std::mem::read_unsigned($, 1) == 0x00)] @ 0x00;
-XLogPage page[while(true)] @ 0x00;
+struct Entry {
+  if (std::mem::read_unsigned($, 2) == 0xD118) {
+    page_section = std::mem::create_section("page_section");
+    // We have a page header, gather the content of all pages in a virtual file
+    XLogPage page[while(std::mem::read_unsigned($, 2) > 0)];
+    u8 page_content[std::mem::get_section_size(page_section)] @ 0x00 in page_section;
+    hex::core::add_virtual_file("page_section", page_content);
+    std::error("Grab the page content save from the Virtual Filesystem tab and use this pattern on it.");
+    return;
+  }
+
+  XLogRecord records[while(std::mem::read_unsigned($, 4) > 0)];
+}[[inline]];
+
+Entry entry @ 0x00;

@@ -1,7 +1,11 @@
 #pragma author "Anthonin Bonnefoy"
 #pragma description "PostgreSQL WAL (Write-Ahead Log) Format"
 #pragma little endian
-#pragma magic [D1 18] @ 0x00
+#pragma magic [0D D1] @ 0x00
+#pragma magic [10 D1] @ 0x00
+#pragma magic [13 D1] @ 0x00
+#pragma magic [16 D1] @ 0x00
+#pragma magic [18 D1] @ 0x00
 
 #define XLR_MAX_BLOCK_ID 32
 #define XLR_BLOCK_ID_DATA_SHORT   255
@@ -270,7 +274,13 @@ fn format_rel_file_locator(auto rlocator) {
 };
 
 fn is_page() {
-    return std::mem::read_unsigned($, 2) == 0xD118;
+    u16 page_header = std::mem::read_unsigned($, 2);
+    return
+      page_header == 0xD10D ||
+      page_header == 0xD110 ||
+      page_header == 0xD113 ||
+      page_header == 0xD116 ||
+      page_header == 0xD118;
 };
 
 fn format_xlogrecptr(auto rec_ptr) {
@@ -976,8 +986,12 @@ struct xl_multi_insert_tuple {
 
 struct xl_heap_multi_insert {
   u8 flags;
+  padding[1];
   u16 ntuples;
-  OffsetNumber offsets[ntuples];
+
+  if (!parent.is_init) {
+    OffsetNumber offsets[ntuples];
+  }
 };
 
 struct xlhp_freeze_plan {
@@ -1360,6 +1374,38 @@ struct spgxlogVacuumRoot {
   u16 nDelete;
 };
 
+struct spgxlogSplitTuple
+{
+	OffsetNumber offnumPrefix;
+
+	OffsetNumber offnumPostfix;
+	bool		newPage;
+	bool		postfixBlkSame;
+  // TODO: Prefix inner tuple, then new postfix inner tuple
+};
+
+struct spgxlogPickSplit
+{
+	bool		isRootSplit;
+
+	u16		nDelete;
+	u16		nInsert;
+	bool		initSrc;
+	bool		initDest;
+
+	OffsetNumber offnumInner;
+	bool		initInner;
+
+	bool		storesNulls;
+
+	bool		innerIsParent;
+	OffsetNumber offnumParent;
+	u16		nodeI;
+
+	spgxlogState stateSrc;
+	// TODO: Rest of the record
+};
+
 struct spgxlogVacuumRedirect {
   u16 nToPlaceholder;
 	OffsetNumber firstPlaceholder;
@@ -1491,6 +1537,7 @@ struct MainFragment {
         }
       }
       (RmgrId::Heap): {
+        bool is_init = rmgr_info & XLOG_HEAP_INIT_PAGE;
         match (info & XLOG_HEAP_OPMASK) {
           (XLOG_HEAP_INSERT): xl_heap_insert xl_heap_insert;
           (XLOG_HEAP_DELETE): xl_heap_delete xl_heap_delete;
@@ -1503,6 +1550,7 @@ struct MainFragment {
         }
       }
       (RmgrId::Heap2): {
+        bool is_init = rmgr_info & XLOG_HEAP_INIT_PAGE;
         match (info & XLOG_HEAP2_OPMASK) {
           (XLOG_HEAP2_REWRITE): xl_heap_rewrite_mapping xl_heap_rewrite_mapping;
           (XLOG_HEAP2_PRUNE_ON_ACCESS | XLOG_HEAP2_PRUNE_VACUUM_SCAN | XLOG_HEAP2_PRUNE_VACUUM_CLEANUP): xl_heap_prune xl_heap_prune;
@@ -1577,8 +1625,8 @@ struct MainFragment {
           (XLOG_SPGIST_ADD_LEAF): spgxlogAddLeaf spgxlogAddLeaf;
           (XLOG_SPGIST_MOVE_LEAFS): spgxlogMoveLeafs spgxlogMoveLeafs;
           (XLOG_SPGIST_ADD_NODE): spgxlogAddNode spgxlogAddNode;
-          (XLOG_SPGIST_SPLIT_TUPLE): padding[0];
-          (XLOG_SPGIST_PICKSPLIT): padding[0];
+          (XLOG_SPGIST_SPLIT_TUPLE): spgxlogSplitTuple spgxlogSplitTuple;
+          (XLOG_SPGIST_PICKSPLIT): spgxlogPickSplit spgxlogPickSplit;
           (XLOG_SPGIST_VACUUM_LEAF): spgxlogVacuumLeaf spgxlogVacuumLeaf;
           (XLOG_SPGIST_VACUUM_ROOT): spgxlogVacuumRoot spgxlogVacuumRoot;
           (XLOG_SPGIST_VACUUM_REDIRECT): spgxlogVacuumRedirect spgxlogVacuumRedirect;
@@ -1612,7 +1660,9 @@ struct MainFragment {
           (XLOG_LOGICAL_MESSAGE): xl_logical_message xl_logical_message;
         }
       }
+      (_): std::error(std::format("rmgrid not handled {}", id));
     }
+    std::print("Fragment length: {}, read: {}", main_fragment_length, ($ - start_address));
     padding[main_fragment_length - ($ - start_address)];
 } [[inline]];
 
@@ -1642,11 +1692,17 @@ struct XLogRecordHeader {
     RmgrId xl_rmid;
     padding[2];
     u32 xl_crc;
+} [[format("format_xlog_record_header")]];
+
+fn format_xlog_record_header(auto hdr) {
+    rmgr_info = hdr.xl_info.rmgr_info << 4;
+    return std::format("{} {}", format_rmgr_id(hdr.xl_rmid),
+      record_identify(hdr.xl_rmid, rmgr_info));
 };
 
 struct XLogRecord {
     auto start_address = $;
-
+    std::print("Start parsing of record at 0x{:X}", $);
     XLogRecordHeader record_header;
     auto end_address = start_address + record_header.xl_tot_len;
 
@@ -1660,12 +1716,12 @@ struct XLogRecord {
     FragmentData fragment_datas[std::core::member_count(fragment_headers)];
 
     std::mem::AlignTo<8>;
+    std::print(std::format("Parsed {} at 0x{:X}, prev {}", record_header, start_address,
+      format_xlogrecptr(record_header.xl_prev)));
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {
-    rmgr_info = rec.record_header.xl_info.rmgr_info << 4;
-    return std::format("{} {}", format_rmgr_id(rec.record_header.xl_rmid),
-      record_identify(rec.record_header.xl_rmid, rmgr_info));
+    return format_xlog_record_header(rec.record_header);
 };
 
 // XLog Page //
@@ -1706,8 +1762,11 @@ struct XLogPage {
   auto available_record_data = globalPageSize - ($ - start);
   u8 record_data[available_record_data] [[hidden]];
 
-  // Copy the page content to the virtual file
-  std::mem::copy_value_to_section(record_data, page_content, std::mem::get_section_size(page_content));
+  // If the record is a contrecord, skip it, we won't be able to process it
+  if (!page_header.xlp_info.first_is_contrecord || std::mem::get_section_size(page_content) > 0) {
+    // Copy the page content to the virtual file
+    std::mem::copy_value_to_section(record_data, page_content, std::mem::get_section_size(page_content));
+  }
 } [[fixed_size(globalPageSize)]];
 
 struct Data {
@@ -1716,12 +1775,12 @@ struct Data {
     page_content = std::mem::create_section("page_content");
 
     // Parse the pages, this will fill the section with pages' payload
-    XLogPage pages[while(std::mem::read_unsigned($, 2) > 0)];
+    XLogPage pages[while(is_page())];
 
     // And copy section's content to a virtual file
     u8 page_content[std::mem::get_section_size(page_content)] @ 0x00 in page_content;
     hex::core::add_virtual_file("page_content", page_content);
-    std::warning("Grab the page content save from the Virtual Filesystem tab and use this pattern on it.");
+    std::warning("Open page_content virtual file and apply the pattern to parse the records.");
     return;
   }
 

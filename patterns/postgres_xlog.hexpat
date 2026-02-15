@@ -6,6 +6,7 @@
 #pragma magic [13 D1] @ 0x00
 #pragma magic [16 D1] @ 0x00
 #pragma magic [18 D1] @ 0x00
+#pragma pattern_limit 0x80000000
 
 #define XLR_MAX_BLOCK_ID 32
 #define XLR_BLOCK_ID_DATA_SHORT   255
@@ -261,6 +262,9 @@ u32 end_page;
 u32 buffer_end_addr;
 u32 requested_data;
 
+u32 limitRecords in;
+u32 nrecords = 0;
+
 struct BlockIdData {
   u16 bi_hi;
   u16 bi_lo;
@@ -365,9 +369,11 @@ fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {
           (XLOG_RESTORE_POINT)        : return "XLOG_RESTORE_POINT";
           (XLOG_OVERWRITE_CONTRECORD) : return "XLOG_OVERWRITE_CONTRECORD";
           (XLOG_END_OF_RECOVERY)      : return "XLOG_END_OF_RECOVERY";
+          (XLOG_CHECKPOINT_SHUTDOWN)  : return "XLOG_CHECKPOINT_SHUTDOWN";
           (XLOG_CHECKPOINT_REDO)      : return "XLOG_CHECKPOINT_REDO";
           (XLOG_CHECKPOINT_ONLINE)    : return "XLOG_CHECKPOINT_ONLINE";
           (XLOG_FPI_FOR_HINT)         : return "XLOG_FPI_FOR_HINT";
+          (XLOG_FPI)                  : return "XLOG_FPI";
         }
       }
       (RmgrId::Transaction): {
@@ -381,7 +387,7 @@ fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {
       }
       (RmgrId::Storage): {
         match (info) {
-          (XLOG_SMGR_CREATE): return "CSMGR_REATE";
+          (XLOG_SMGR_CREATE): return "SMGR_CREATE";
           (XLOG_SMGR_TRUNCATE): return "SMGR_TRUNCATE";
         }
       }
@@ -552,6 +558,7 @@ fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {
         }
       }
     }
+    std::error(std::format("Unknown rmgrid: {}, info 0x{:X}", rmgr_id, info));
 };
 
 bitfield ImageInfoFlags {
@@ -1164,7 +1171,7 @@ struct xl_dbase_drop_rec {
 
 struct xl_tblspc_create_rec {
     Oid ts_id;
-    // ts_path[] follows (null-terminated), rest is padding
+    char ts_path[while(std::mem::read_unsigned($, 1) != 0x00)];
 };
 
 struct xl_tblspc_drop_rec {
@@ -1673,7 +1680,6 @@ struct MainFragment {
       }
       (_): std::error(std::format("rmgrid not handled {}", id));
     }
-    std::print("Fragment length: {}, read: {}", main_fragment_length, ($ - start_address));
     padding[main_fragment_length - ($ - start_address)];
 } [[inline]];
 
@@ -1727,6 +1733,7 @@ struct XLogRecord {
     FragmentData fragment_datas[std::core::member_count(fragment_headers)];
 
     std::mem::AlignTo<8>;
+    nrecords = nrecords + 1;
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {
@@ -1793,7 +1800,7 @@ struct Data {
     return;
   }
 
-  XLogRecord records[while(std::mem::read_unsigned($, 4) > 0)];
+  XLogRecord records[while(std::mem::read_unsigned($, 4) > 0 && (nrecords < limitRecords || limitRecords == 0))];
 } [[inline]];
 
 Data data @ 0x00;

@@ -243,7 +243,6 @@ using XLogRecPtr = u64 [[format("format_xlogrecptr")]];
 using TimestampTz = u64;
 using OffsetNumber = u16;
 using pg_time_t = type::time64_t;
-using ItemPointerData = u64;
 using CommandId = u32;
 using FullTransactionId = u64;
 using MultiXactOffset = u32;
@@ -262,6 +261,15 @@ u32 end_page;
 u32 buffer_end_addr;
 u32 requested_data;
 
+struct BlockIdData {
+  u16 bi_hi;
+  u16 bi_lo;
+};
+
+struct ItemPointerData {
+  BlockIdData ip_blkid;
+  OffsetNumber ip_posid;
+};
 
 struct RelFileLocator {
     u32 spcOid;
@@ -713,6 +721,7 @@ struct xl_invalidations {
   Oid dbId;
   Oid tsId;
   bool relcacheInitFileInval;
+  padding[3];
   u32 nmsgs;
   SharedInvalidationMessage msgs[nmsgs];
 };
@@ -946,9 +955,11 @@ struct xl_heap_confirm {
 
 struct xl_heap_inplace {
   OffsetNumber offnum;
+  padding[2];
   Oid dbId;
   Oid tsId;
   bool relcacheInitFileInval;
+  padding[3];
   u32 nmsgs;
   SharedInvalidationMessage msgs[nmsgs];
 };
@@ -1702,9 +1713,9 @@ fn format_xlog_record_header(auto hdr) {
 
 struct XLogRecord {
     auto start_address = $;
-    std::print("Start parsing of record at 0x{:X}", $);
     XLogRecordHeader record_header;
     auto end_address = start_address + record_header.xl_tot_len;
+    std::print(std::format("Parsed record header {} at 0x{:X}, prev {}", record_header, start_address, format_xlogrecptr(record_header.xl_prev)));
 
     current_block = 0;
     data_total = 0;
@@ -1716,8 +1727,6 @@ struct XLogRecord {
     FragmentData fragment_datas[std::core::member_count(fragment_headers)];
 
     std::mem::AlignTo<8>;
-    std::print(std::format("Parsed {} at 0x{:X}, prev {}", record_header, start_address,
-      format_xlogrecptr(record_header.xl_prev)));
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {

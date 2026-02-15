@@ -269,6 +269,10 @@ fn format_rel_file_locator(auto rlocator) {
     return std::format("{}/{}/{}", rlocator.spcOid, rlocator.dbOid, rlocator.relNumber);
 };
 
+fn is_page() {
+    return std::mem::read_unsigned($, 2) == 0xD118;
+};
+
 fn format_xlogrecptr(auto rec_ptr) {
     return std::format("{:X}/{:X}", rec_ptr >> 32, rec_ptr);
 };
@@ -345,6 +349,7 @@ fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {
           (XLOG_END_OF_RECOVERY)      : return "XLOG_END_OF_RECOVERY";
           (XLOG_CHECKPOINT_REDO)      : return "XLOG_CHECKPOINT_REDO";
           (XLOG_CHECKPOINT_ONLINE)    : return "XLOG_CHECKPOINT_ONLINE";
+          (XLOG_FPI_FOR_HINT)         : return "XLOG_FPI_FOR_HINT";
         }
       }
       (RmgrId::Transaction): {
@@ -1658,7 +1663,9 @@ struct XLogRecord {
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {
-    return std::format("{} {}", format_rmgr_id(rec.record_header.xl_rmid), rec.record_header.xl_rmid);
+    rmgr_info = rec.record_header.xl_info.rmgr_info << 4;
+    return std::format("{} {}", format_rmgr_id(rec.record_header.xl_rmid),
+      record_identify(rec.record_header.xl_rmid, rmgr_info));
 };
 
 // XLog Page //
@@ -1691,7 +1698,7 @@ struct XLogPageHeader {
   }
 };
 
-std::mem::Section page_section;
+std::mem::Section page_content;
 struct XLogPage {
   auto start = $;
   XLogPageHeader page_header;
@@ -1700,21 +1707,25 @@ struct XLogPage {
   u8 record_data[available_record_data] [[hidden]];
 
   // Copy the page content to the virtual file
-  std::mem::copy_value_to_section(record_data, page_section, std::mem::get_section_size(page_section));
+  std::mem::copy_value_to_section(record_data, page_content, std::mem::get_section_size(page_content));
 } [[fixed_size(globalPageSize)]];
 
-struct Entry {
-  if (std::mem::read_unsigned($, 2) == 0xD118) {
-    page_section = std::mem::create_section("page_section");
-    // We have a page header, gather the content of all pages in a virtual file
-    XLogPage page[while(std::mem::read_unsigned($, 2) > 0)];
-    u8 page_content[std::mem::get_section_size(page_section)] @ 0x00 in page_section;
-    hex::core::add_virtual_file("page_section", page_content);
-    std::error("Grab the page content save from the Virtual Filesystem tab and use this pattern on it.");
+struct Data {
+  if (is_page()) {
+    // Create the section that will contain the content of all pages
+    page_content = std::mem::create_section("page_content");
+
+    // Parse the pages, this will fill the section with pages' payload
+    XLogPage pages[while(std::mem::read_unsigned($, 2) > 0)];
+
+    // And copy section's content to a virtual file
+    u8 page_content[std::mem::get_section_size(page_content)] @ 0x00 in page_content;
+    hex::core::add_virtual_file("page_content", page_content);
+    std::warning("Grab the page content save from the Virtual Filesystem tab and use this pattern on it.");
     return;
   }
 
   XLogRecord records[while(std::mem::read_unsigned($, 4) > 0)];
-}[[inline]];
+} [[inline]];
 
-Entry entry @ 0x00;
+Data data @ 0x00;

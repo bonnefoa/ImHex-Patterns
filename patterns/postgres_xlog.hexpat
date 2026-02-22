@@ -3,6 +3,7 @@
 #pragma little endian
 #pragma magic [0D D1] @ 0x00
 #pragma magic [1? D1] @ 0x00
+#pragma magic [FF D1] @ 0x00
 #pragma pattern_limit 0x80000000
 
 #define XLR_MAX_BLOCK_ID 32
@@ -10,7 +11,7 @@
 #define XLR_BLOCK_ID_DATA_LONG    254
 #define XLR_BLOCK_ID_ORIGIN       253
 #define XLR_BLOCK_ID_TOPLEVEL_XID 252
-#define XLR_INFO_MASK    0x0f
+#define XLR_INFO_MASK    0x0F
 
 #define XLOG_CHECKPOINT_SHUTDOWN        0x00
 #define XLOG_CHECKPOINT_ONLINE          0x10
@@ -27,6 +28,12 @@
 #define XLOG_OVERWRITE_CONTRECORD       0xD0
 #define XLOG_CHECKPOINT_REDO            0xE0
 #define XLOG_LOGICAL_DECODING_STATUS_CHANGE 0xF0
+
+#define BKPBLOCK_HAS_IMAGE  0x10  /* block data is an XLogRecordBlockImage */
+#define BKPBLOCK_HAS_DATA 0x20
+#define BKPBLOCK_WILL_INIT  0x40  /* redo will re-init the page */
+#define BKPBLOCK_SAME_REL 0x80  /* RelFileNode omitted, same as previous */
+
 
 #define XLOG_XACT_COMMIT            0x00
 #define XLOG_XACT_PREPARE           0x10
@@ -223,14 +230,14 @@
 #define SHAREDINVALSNAPSHOT_ID  (-5)
 #define SHAREDINVALRELSYNC_ID   (-6)
 
-import std.string;
-import type.size;
-import std.core;
-import type.magic;
-import std.mem;
-import type.time;
 import hex.core;
+import std.core;
 import std.math;
+import std.mem;
+import std.string;
+import type.magic;
+import type.size;
+import type.time;
 
 
 using TransactionId = u32;
@@ -245,6 +252,7 @@ using pg_time_t = type::time64_t;
 using CommandId = u32;
 using FullTransactionId = u64;
 using MultiXactOffset = u32;
+using MultiXactOffset_PG19 = u64;
 using RmgrId;
 
 // Global variables
@@ -256,6 +264,7 @@ u8 rmgr_info;
 RmgrId rmgr_id;
 u8 current_block;
 u32 end_page;
+u16 pg_version;
 
 u32 buffer_end_addr;
 u32 requested_data;
@@ -285,18 +294,20 @@ fn format_rel_file_locator(auto rlocator) {
 
 fn is_page() {
     u16 page_header = std::mem::read_unsigned($, 2);
-    return
-      page_header == 0xD10D ||
-      page_header == 0xD110 ||
-      page_header == 0xD113 ||
-      page_header == 0xD116 ||
-      page_header == 0xD118 ||
-      page_header == 0xD11A ||
-      page_header == 0xD11B;
+    match (page_header) {
+      (0xD10D): pg_version = 14;
+      (0xD110): pg_version = 15;
+      (0xD113): pg_version = 16;
+      (0xD116): pg_version = 17;
+      (0xD118): pg_version = 18;
+      (0xD11B): pg_version = 19;
+      (_): return false;
+    }
+    return true;
 };
 
 fn format_xlogrecptr(auto rec_ptr) {
-    return std::format("{:X}/{:X}", rec_ptr >> 32, rec_ptr);
+    return std::format("{:X}/{:X}", rec_ptr >> 32, rec_ptr & 0xffffffff);
 };
 
 bitfield ForkFlags {
@@ -368,6 +379,7 @@ fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {
           (XLOG_PARAMETER_CHANGE)     : return "XLOG_PARAMETER_CHANGE";
           (XLOG_RESTORE_POINT)        : return "XLOG_RESTORE_POINT";
           (XLOG_OVERWRITE_CONTRECORD) : return "XLOG_OVERWRITE_CONTRECORD";
+          (XLOG_BACKUP_END)           : return "XLOG_BACKUP_END";
           (XLOG_END_OF_RECOVERY)      : return "XLOG_END_OF_RECOVERY";
           (XLOG_CHECKPOINT_SHUTDOWN)  : return "XLOG_CHECKPOINT_SHUTDOWN";
           (XLOG_CHECKPOINT_REDO)      : return "XLOG_CHECKPOINT_REDO";
@@ -563,11 +575,17 @@ fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {
 
 bitfield ImageInfoFlags {
     has_hole    : 1;
-    apply       : 1;
-    compress_pglz : 1;
-    compress_lz4 : 1;
-    compress_zstd : 1;
-    padding     : 3;
+    if (pg_version == 14) {
+      compressed  : 1;
+      apply       : 1;
+      padding     : 5;
+    } else {
+      apply       : 1;
+      compress_pglz : 1;
+      compress_lz4 : 1;
+      compress_zstd : 1;
+      padding     : 3;
+    }
 };
 
 struct XLogRecordBlockCompressHeader {
@@ -580,50 +598,17 @@ struct XLogRecordBlockImageHeader {
     ImageInfoFlags bimg_info;
 
     // BKPIMAGE_HAS_HOLE && BKPIMAGE_COMPRESSED
-    if ((bimg_info.has_hole == 1) &&
-        ((bimg_info.compress_pglz == 1) ||
-         (bimg_info.compress_lz4 == 1) ||
-         (bimg_info.compress_zstd == 1))) {
-        XLogRecordBlockCompressHeader compress_header;
+    if (pg_version == 14 && bimg_info.compressed) {
+      XLogRecordBlockCompressHeader compress_header;
+    } else if (pg_version > 14 && (bimg_info.has_hole == 1) &&
+          ((bimg_info.compress_pglz == 1) ||
+           (bimg_info.compress_lz4 == 1) ||
+           (bimg_info.compress_zstd == 1))) {
+          XLogRecordBlockCompressHeader compress_header;
     }
 };
 
 // XLog Record //
-
-struct BlockHeader {
-    ForkFlags fork_flags;
-    u16 data_length;
-    data_total += data_length;
-    if (fork_flags.has_image == 1) {
-        XLogRecordBlockImageHeader image_header;
-        data_total += image_header.length;
-    }
-    if (fork_flags.same_rel == 0) {
-        RelFileLocator rel_file_locator;
-    }
-    BlockNumber block_number;
-} [[inline]];
-
-struct FragmentHeader {
-    u8 id;
-    if (id == XLR_BLOCK_ID_DATA_SHORT) {
-      u8 data_length;
-      main_fragment_length = data_length;
-      data_total += data_length;
-    } else if (id == XLR_BLOCK_ID_DATA_LONG) {
-      u32 data_length;
-      main_fragment_length = data_length;
-      data_total += data_length;
-    } else if (id == XLR_BLOCK_ID_ORIGIN) {
-      u16 record_origin;
-    } else if (id == XLR_BLOCK_ID_TOPLEVEL_XID) {
-      TransactionId toplevel_xid;
-    } else if (id < XLR_MAX_BLOCK_ID) {
-      BlockHeader block_header;
-    } else {
-        std::error(std::format("Unknown data FragmentHeader: {} at pos 0x{:x}", id, $));
-    }
-};
 
 bitfield XLogRecordInfoFlags {
     special_rel_update : 1;
@@ -962,13 +947,15 @@ struct xl_heap_confirm {
 
 struct xl_heap_inplace {
   OffsetNumber offnum;
-  padding[2];
-  Oid dbId;
-  Oid tsId;
-  bool relcacheInitFileInval;
-  padding[3];
-  u32 nmsgs;
-  SharedInvalidationMessage msgs[nmsgs];
+  if (pg_version >= 18) {
+    padding[2];
+    Oid dbId;
+    Oid tsId;
+    bool relcacheInitFileInval;
+    padding[3];
+    u32 nmsgs;
+    SharedInvalidationMessage msgs[nmsgs];
+  }
 };
 
 struct xl_heap_visible {
@@ -1071,8 +1058,12 @@ struct xl_btree_reuse_page
 {
 	RelFileLocator locator;
 	BlockNumber block;
-	FullTransactionId snapshotConflictHorizon;
-	bool		isCatalogRel;
+  if (pg_version >= 16) {
+    FullTransactionId snapshotConflictHorizon;
+    bool		isCatalogRel;
+  } else if (pg_version < 16) {
+    FullTransactionId latestRemovedFullXid;
+  }
 };
 
 struct xl_btree_vacuum
@@ -1086,7 +1077,9 @@ struct xl_btree_delete
 	TransactionId snapshotConflictHorizon;
 	u16		ndeleted;
 	u16		nupdated;
-	bool		isCatalogRel;
+  if (pg_version >= 18) {
+    bool		isCatalogRel;
+  }
 };
 
 struct xl_btree_update
@@ -1497,8 +1490,10 @@ struct MainFragment {
           (XLOG_RESTORE_POINT): xl_restore_point xl_restore_point;
           (XLOG_OVERWRITE_CONTRECORD): xl_overwrite_contrecord xl_overwrite_contrecord;
           (XLOG_END_OF_RECOVERY): xl_end_of_recovery xl_end_of_recovery;
+          (XLOG_BACKUP_END): XLogRecPtr startpoint;
           (XLOG_CHECKPOINT_REDO): u32 wal_level;
           (XLOG_CHECKPOINT_ONLINE): CheckPoint checkpoint;
+          (XLOG_CHECKPOINT_SHUTDOWN): CheckPoint checkpoint;
         }
       }
       (RmgrId::Transaction): {
@@ -1683,6 +1678,49 @@ struct MainFragment {
     padding[main_fragment_length - ($ - start_address)];
 } [[inline]];
 
+struct BlockHeader {
+    u8 fl = std::mem::read_unsigned($, 1);
+    ForkFlags fork_flags;
+    if (fork_flags.has_image != (fl & BKPBLOCK_HAS_IMAGE > 0)) {
+      std::error(std::format("mismatch has_image, {}, {}", fork_flags.has_image, (fl & BKPBLOCK_HAS_IMAGE)));
+    }
+
+    u16 data_length;
+    data_total += data_length;
+    if (fork_flags.has_image > 0) {
+    // if (fl & BKPBLOCK_HAS_IMAGE > 0) {
+        XLogRecordBlockImageHeader image_header;
+        data_total += image_header.length;
+    }
+    // if (fork_flags.same_rel == 0) {
+    if (fl & BKPBLOCK_SAME_REL == 0) {
+        RelFileLocator rel_file_locator;
+    }
+    BlockNumber block_number;
+} [[inline]];
+
+struct FragmentHeader {
+    u8 id;
+    if (id == XLR_BLOCK_ID_DATA_SHORT) {
+      u8 data_length;
+      main_fragment_length = data_length;
+      data_total += data_length;
+    } else if (id == XLR_BLOCK_ID_DATA_LONG) {
+      u32 data_length;
+      main_fragment_length = data_length;
+      data_total += data_length;
+    } else if (id == XLR_BLOCK_ID_ORIGIN) {
+      u16 record_origin;
+    } else if (id == XLR_BLOCK_ID_TOPLEVEL_XID) {
+      TransactionId toplevel_xid;
+    } else if (id < XLR_MAX_BLOCK_ID) {
+      BlockHeader block_header;
+      std::print(std::format("Parsed block header: {}, len: {}, 0x{:x}", id, block_header.data_length, $));
+    } else {
+      std::error(std::format("Unknown data FragmentHeader: {} at pos 0x{:x}", id, $));
+    }
+};
+
 struct FragmentData {
   // TODO: More precise block content
   if (parent.fragment_headers[current_block].id < XLR_MAX_BLOCK_ID) {
@@ -1770,20 +1808,39 @@ struct XLogPageHeader {
   }
 };
 
+bool is_first_page = true;
 std::mem::Section page_content;
 struct XLogPage {
   auto start = $;
   XLogPageHeader page_header;
 
   auto available_record_data = std::math::min(globalPageSize - ($ - start), std::mem::size() - $);
-  u8 record_data[available_record_data] [[hidden]];
-
-  // If the record is a contrecord, skip it, we won't be able to process it
-  if (!page_header.xlp_info.first_is_contrecord || std::mem::get_section_size(page_content) > 0) {
-    // Copy the page content to the virtual file
-    std::mem::copy_value_to_section(record_data, page_content, std::mem::get_section_size(page_content));
+  // First contrecord we're parsing, skip it
+  if (is_first_page && page_header.xlp_info.first_is_contrecord) {
+    if (page_header.xlp_rem_len > available_record_data) {
+      // Continuation record uses the whole page, skip it
+      continue;
+    }
+    // Advance the cursor
+    $ += page_header.xlp_rem_len + (page_header.xlp_rem_len % 8);
+    u8 record_data[(available_record_data - (page_header.xlp_rem_len % 8))  - page_header.xlp_rem_len] [[hidden]];
+  } else {
+    u8 record_data[available_record_data] [[hidden]];
   }
+
+  if (is_first_page) {
+    is_first_page = false;
+    const str record_magic = "\xD1\xFF";
+    const str version = str(pg_version);
+    std::mem::copy_value_to_section(record_magic, page_content, std::mem::get_section_size(page_content));
+    std::mem::copy_value_to_section(version, page_content, std::mem::get_section_size(page_content));
+    std::mem::set_section_size(page_content, 16);
+  }
+
+  // Copy the page content to the virtual file
+  std::mem::copy_value_to_section(record_data, page_content, std::mem::get_section_size(page_content));
 };
+
 
 struct Data {
   if (is_page()) {
@@ -1800,6 +1857,10 @@ struct Data {
     return;
   }
 
+  u16 fake_magic;
+  u8 fake_version;
+  pg_version = fake_version;
+  std::mem::AlignTo<0x10>;
   XLogRecord records[while(std::mem::read_unsigned($, 4) > 0 && (nrecords < limitRecords || limitRecords == 0))];
 } [[inline]];
 

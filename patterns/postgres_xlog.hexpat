@@ -2,10 +2,7 @@
 #pragma description "PostgreSQL WAL (Write-Ahead Log) Format"
 #pragma little endian
 #pragma magic [0D D1] @ 0x00
-#pragma magic [10 D1] @ 0x00
-#pragma magic [13 D1] @ 0x00
-#pragma magic [16 D1] @ 0x00
-#pragma magic [18 D1] @ 0x00
+#pragma magic [1? D1] @ 0x00
 #pragma pattern_limit 0x80000000
 
 #define XLR_MAX_BLOCK_ID 32
@@ -233,6 +230,7 @@ import type.magic;
 import std.mem;
 import type.time;
 import hex.core;
+import std.math;
 
 
 using TransactionId = u32;
@@ -292,7 +290,9 @@ fn is_page() {
       page_header == 0xD110 ||
       page_header == 0xD113 ||
       page_header == 0xD116 ||
-      page_header == 0xD118;
+      page_header == 0xD118 ||
+      page_header == 0xD11A ||
+      page_header == 0xD11B;
 };
 
 fn format_xlogrecptr(auto rec_ptr) {
@@ -1775,7 +1775,7 @@ struct XLogPage {
   auto start = $;
   XLogPageHeader page_header;
 
-  auto available_record_data = globalPageSize - ($ - start);
+  auto available_record_data = std::math::min(globalPageSize - ($ - start), std::mem::size() - $);
   u8 record_data[available_record_data] [[hidden]];
 
   // If the record is a contrecord, skip it, we won't be able to process it
@@ -1783,7 +1783,7 @@ struct XLogPage {
     // Copy the page content to the virtual file
     std::mem::copy_value_to_section(record_data, page_content, std::mem::get_section_size(page_content));
   }
-} [[fixed_size(globalPageSize)]];
+};
 
 struct Data {
   if (is_page()) {
@@ -1791,7 +1791,7 @@ struct Data {
     page_content = std::mem::create_section("page_content");
 
     // Parse the pages, this will fill the section with pages' payload
-    XLogPage pages[while(is_page())];
+    XLogPage pages[while(is_page() && !std::mem::eof())];
 
     // And copy section's content to a virtual file
     u8 page_content[std::mem::get_section_size(page_content)] @ 0x00 in page_content;

@@ -1830,7 +1830,7 @@ struct XLogPage {
 
   if (is_first_page) {
     is_first_page = false;
-    const str record_magic = "\xD1\xFF";
+    const str record_magic = "\xFF\xD1";
     const str version = str(pg_version);
     std::mem::copy_value_to_section(record_magic, page_content, std::mem::get_section_size(page_content));
     std::mem::copy_value_to_section(version, page_content, std::mem::get_section_size(page_content));

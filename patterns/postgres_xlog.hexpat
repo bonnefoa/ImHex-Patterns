@@ -384,6 +384,11 @@ fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {
           (XLOG_CHECKPOINT_SHUTDOWN)  : return "XLOG_CHECKPOINT_SHUTDOWN";
           (XLOG_CHECKPOINT_REDO)      : return "XLOG_CHECKPOINT_REDO";
           (XLOG_CHECKPOINT_ONLINE)    : return "XLOG_CHECKPOINT_ONLINE";
+          (XLOG_NOOP)                 : return "XLOG_NOOP";
+          (XLOG_SWITCH)               : return "XLOG_SWITCH";
+          (XLOG_FPW_CHANGE)           : return "XLOG_FPW_CHANGE";
+          (XLOG_LOGICAL_DECODING_STATUS_CHANGE) : return "XLOG_LOGICAL_DECODING_STATUS_CHANGE";
+          (XLOG_NEXTOID)              : return "XLOG_NEXTOID";
           (XLOG_FPI_FOR_HINT)         : return "XLOG_FPI_FOR_HINT";
           (XLOG_FPI)                  : return "XLOG_FPI";
         }
@@ -1493,6 +1498,7 @@ struct MainFragment {
           (XLOG_BACKUP_END): XLogRecPtr startpoint;
           (XLOG_CHECKPOINT_REDO): u32 wal_level;
           (XLOG_CHECKPOINT_ONLINE): CheckPoint checkpoint;
+          (XLOG_NEXTOID): Oid nextOid;
           (XLOG_CHECKPOINT_SHUTDOWN): CheckPoint checkpoint;
         }
       }

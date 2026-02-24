@@ -1828,8 +1828,10 @@ struct XLogPage {
       continue;
     }
     // Advance the cursor
-    $ += page_header.xlp_rem_len + (page_header.xlp_rem_len % 8);
-    u8 record_data[(available_record_data - (page_header.xlp_rem_len % 8))  - page_header.xlp_rem_len] [[hidden]];
+    auto skipping = std::mem::align_to(8, page_header.xlp_rem_len);
+    $ += skipping;
+    std::print(std::format("Skipping remaining of the first contrecord, skipping {}, new pos: 0x{:X}", skipping, $));
+    u8 record_data[available_record_data - skipping] [[hidden]];
   } else {
     u8 record_data[available_record_data] [[hidden]];
   }

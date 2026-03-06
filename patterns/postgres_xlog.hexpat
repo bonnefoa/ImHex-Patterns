@@ -1730,10 +1730,10 @@ struct FragmentHeader {
 struct FragmentData {
   // TODO: More precise block content
   if (parent.fragment_headers[current_block].id < XLR_MAX_BLOCK_ID) {
-    u8 block_content[parent.fragment_headers[current_block].block_header.data_length];
     if (parent.fragment_headers[current_block].block_header.fork_flags.has_image) {
       u8 backup_image[parent.fragment_headers[current_block].block_header.image_header.length];
     }
+    u8 block_content[parent.fragment_headers[current_block].block_header.data_length];
   } else if (parent.fragment_headers[current_block].id == XLR_BLOCK_ID_DATA_SHORT
             || parent.fragment_headers[current_block].id == XLR_BLOCK_ID_DATA_LONG) {
     MainFragment main_fragment;

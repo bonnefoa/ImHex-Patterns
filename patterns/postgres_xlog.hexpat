@@ -916,6 +916,12 @@ struct xl_heap_delete {
   u8 flags;
 };
 
+struct HeapTupleHeader {
+  u16 t_infomask2;
+  u16 t_infomask;
+  u8 t_hoff;
+};
+
 struct xl_heap_update {
   TransactionId old_xmax;
   OffsetNumber old_offnum;
@@ -923,6 +929,12 @@ struct xl_heap_update {
   u8 flags;
   TransactionId new_xmax;
   OffsetNumber new_offnum;
+  if (flags & (XLH_UPDATE_CONTAINS_OLD_TUPLE | XLH_UPDATE_CONTAINS_OLD_KEY)) {
+    HeapTupleHeader heap_tuple_header;
+    u8 heap_data[parent.parent.parent.fragment_headers[current_block].data_length - 19];
+  }
+};
+
 };
 
 struct xl_heap_truncate {
@@ -1560,8 +1572,8 @@ struct MainFragment {
         match (info & XLOG_HEAP_OPMASK) {
           (XLOG_HEAP_INSERT): xl_heap_insert xl_heap_insert;
           (XLOG_HEAP_DELETE): xl_heap_delete xl_heap_delete;
-          (XLOG_HEAP_UPDATE): xl_heap_update xl_heap_update;
           (XLOG_HEAP_TRUNCATE): xl_heap_truncate xl_heap_truncate;
+          (XLOG_HEAP_UPDATE): xl_heap_update xl_heap_update;
           (XLOG_HEAP_HOT_UPDATE): xl_heap_update xl_heap_hot_update;
           (XLOG_HEAP_CONFIRM): xl_heap_confirm xl_heap_confirm;
           (XLOG_HEAP_LOCK): xl_heap_lock xl_heap_lock;
@@ -1842,7 +1854,7 @@ struct XLogPage {
     const str version = str(pg_version);
     std::mem::copy_value_to_section(record_magic, page_content, std::mem::get_section_size(page_content));
     std::mem::copy_value_to_section(version, page_content, std::mem::get_section_size(page_content));
-    std::mem::set_section_size(page_content, 16);
+    std::mem::set_section_size(page_content, 0x28);
   }
 
   // Copy the page content to the virtual file
@@ -1868,7 +1880,7 @@ struct Data {
   u16 fake_magic;
   u8 fake_version;
   pg_version = fake_version;
-  std::mem::AlignTo<0x10>;
+  std::mem::AlignTo<0x28>;
   XLogRecord records[while(std::mem::read_unsigned($, 4) > 0 && (nrecords < limitRecords || limitRecords == 0))];
 } [[inline]];
 

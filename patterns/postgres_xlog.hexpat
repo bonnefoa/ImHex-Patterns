@@ -956,8 +956,6 @@ struct xl_heap_update {
   }
 };
 
-};
-
 struct xl_heap_truncate {
   Oid dbId;
   u32 nrelids;

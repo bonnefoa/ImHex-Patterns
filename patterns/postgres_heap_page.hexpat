@@ -67,7 +67,8 @@ struct Page {
   auto start_address = $;
   PageHeaderData header;
   // Read line pointers until we reach the start of free space
-  ItemIdData line_pointers[while ($ < header.pd_lower)];
+  ItemIdData line_pointers[while (($ - start_address) < header.pd_lower)];
+  current_lp = 0;
   HeapTupleData heap_data[std::core::member_count(line_pointers)];
 } [[fixed_size(8192)]];
 

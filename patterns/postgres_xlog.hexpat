@@ -230,6 +230,11 @@
 #define SHAREDINVALSNAPSHOT_ID  (-5)
 #define SHAREDINVALRELSYNC_ID   (-6)
 
+#define USECS_PER_SEC 1000000
+#define POSTGRES_EPOCH_JDATE  2451545
+#define UNIX_EPOCH_JDATE    2440588
+#define SECS_PER_DAY  86400
+
 import hex.core;
 import std.core;
 import std.math;
@@ -246,7 +251,7 @@ using Oid = u32;
 using BlockNumber = u32;
 using TimeLineID = u32;
 using XLogRecPtr = u64 [[format("format_xlogrecptr")]];
-using TimestampTz = u64;
+using TimestampTz = u64 [[format("format_timestampTz")]];
 using OffsetNumber = u16;
 using pg_time_t = type::time64_t;
 using CommandId = u32;
@@ -301,6 +306,8 @@ fn is_page() {
       (0xD116): pg_version = 17;
       (0xD118): pg_version = 18;
       (0xD11B): pg_version = 19;
+      (0xD11C): pg_version = 19;
+      (0xD11D): pg_version = 19;
       (_): return false;
     }
     return true;
@@ -308,6 +315,14 @@ fn is_page() {
 
 fn format_xlogrecptr(auto rec_ptr) {
     return std::format("{:X}/{:X}", rec_ptr >> 32, rec_ptr & 0xffffffff);
+};
+
+fn format_timestampTz(auto t) {
+    type::time64_t result = t / USECS_PER_SEC +
+              ((POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY);
+    auto ms = t % USECS_PER_SEC / 1000;
+    auto date_part = std::time::format(std::time::to_utc(result), "%Y-%m-%dT%H:%M:%S");
+    return std::format("{}.{:03}", date_part, ms);
 };
 
 bitfield ForkFlags {
@@ -731,15 +746,21 @@ struct CheckPoint
   bool    fullPageWrites;
   padding[3];
   u32     wal_level;
+  bool   logicalDecodingEnabled;
+  padding[7];
   FullTransactionId nextXid;
   Oid     nextOid;
   MultiXactId nextMulti;
-  MultiXactOffset nextMultiOffset;
+  if (pg_version >= 19) {
+    MultiXactOffset_PG19 nextMultiOffset;
+  } else {
+    MultiXactOffset nextMultiOffset;
+  }
   TransactionId oldestXid;
   Oid     oldestXidDB;
   MultiXactId oldestMulti;
   Oid     oldestMultiDB;
-  padding[4];
+
   pg_time_t time;
   TransactionId oldestCommitTsXid;
   TransactionId newestCommitTsXid;
@@ -1492,9 +1513,12 @@ struct xl_replorigin_drop {
 struct xl_logical_message {
     Oid dbId;
     bool transactional;
-    u32 prefix_size;
-    u32 message_size;
-    u8 message[1]; // variable: prefix + payload
+    padding[3];
+    u64 prefix_size;
+    u64 message_size;
+
+    u8 prefix[prefix_size];
+    u8 message[message_size];
 };
 
 struct MainFragment {
@@ -1837,6 +1861,7 @@ struct XLogPage {
   if (is_first_page && page_header.xlp_info.first_is_contrecord) {
     if (page_header.xlp_rem_len > available_record_data) {
       // Continuation record uses the whole page, skip it
+      u8 record_data[available_record_data] [[hidden]];
       continue;
     }
     // Advance the cursor

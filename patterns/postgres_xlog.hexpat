@@ -308,6 +308,7 @@ fn is_page() {
       (0xD11B): pg_version = 19;
       (0xD11C): pg_version = 19;
       (0xD11D): pg_version = 19;
+      (0xD11E): pg_version = 19;
       (_): return false;
     }
     return true;
@@ -317,11 +318,11 @@ fn format_xlogrecptr(auto rec_ptr) {
     return std::format("{:X}/{:X}", rec_ptr >> 32, rec_ptr & 0xffffffff);
 };
 
-fn format_timestampTz(auto t) {
+fn format_timestampTz(u64 t) {
     type::time64_t result = t / USECS_PER_SEC +
               ((POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY);
     auto ms = t % USECS_PER_SEC / 1000;
-    auto date_part = std::time::format(std::time::to_utc(result), "%Y-%m-%dT%H:%M:%S");
+    str date_part = std::time::format(std::time::to_utc(result), "%Y-%m-%dT%H:%M:%S");
     return std::format("{}.{:03}", date_part, ms);
 };
 
@@ -1767,6 +1768,9 @@ struct FragmentData {
     if (parent.fragment_headers[current_block].block_header.fork_flags.has_image) {
       u8 backup_image[parent.fragment_headers[current_block].block_header.image_header.length];
     }
+    if (parent.fragment_headers[current_block].block_header.data_length > std::mem::size() - $) {
+      return;
+    }
     u8 block_content[parent.fragment_headers[current_block].block_header.data_length];
   } else if (parent.fragment_headers[current_block].id == XLR_BLOCK_ID_DATA_SHORT
             || parent.fragment_headers[current_block].id == XLR_BLOCK_ID_DATA_LONG) {
@@ -1861,13 +1865,16 @@ struct XLogPage {
   if (is_first_page && page_header.xlp_info.first_is_contrecord) {
     if (page_header.xlp_rem_len > available_record_data) {
       // Continuation record uses the whole page, skip it
-      u8 record_data[available_record_data] [[hidden]];
+      std::print(std::format("Whole page contains a contrecord, rem len {}, skipping {} bytes",
+        page_header.xlp_rem_len, available_record_data));
+      u8 record_data[available_record_data];
       continue;
     }
     // Advance the cursor
     auto skipping = std::mem::align_to(8, page_header.xlp_rem_len);
     $ += skipping;
-    std::print(std::format("Skipping remaining of the first contrecord, skipping {}, new pos: 0x{:X}", skipping, $));
+    std::print(std::format("Skipping remaining of the first contrecord, rem len {}, skipping {}, new pos: 0x{:X}",
+       page_header.xlp_rem_len, skipping, $));
     u8 record_data[available_record_data - skipping] [[hidden]];
   } else {
     u8 record_data[available_record_data] [[hidden]];
@@ -1888,6 +1895,7 @@ struct XLogPage {
 
 
 struct Data {
+  is_first_page = true;
   if (is_page()) {
     // Create the section that will contain the content of all pages
     page_content = std::mem::create_section("page_content");
@@ -1896,10 +1904,10 @@ struct Data {
     XLogPage pages[while(is_page() && !std::mem::eof())];
 
     // And copy section's content to a virtual file
-    u8 page_content[std::mem::get_section_size(page_content)] @ 0x00 in page_content;
-    hex::core::add_virtual_file("page_content", page_content);
+    u8 page_bytes[std::mem::get_section_size(page_content)] @ 0x00 in page_content;
+    hex::core::add_virtual_file("page_content", page_bytes);
     std::warning("Open page_content virtual file and apply the pattern to parse the records.");
-    return;
+    break;
   }
 
   u16 fake_magic;
@@ -1907,6 +1915,7 @@ struct Data {
   pg_version = fake_version;
   std::mem::AlignTo<0x28>;
   XLogRecord records[while(std::mem::read_unsigned($, 4) > 0 && (nrecords < limitRecords || limitRecords == 0))];
+  return;
 } [[inline]];
 
-Data data @ 0x00;
+Data data @ 0x0;

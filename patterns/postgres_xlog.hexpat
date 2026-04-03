@@ -382,8 +382,8 @@ fn format_rmgr_id(RmgrId rmgr_id) {
       (RmgrId::ReplicationOrigin) : return "ReplicationOrigin";
       (RmgrId::Generic)           : return "Generic";
       (RmgrId::LogicalMsg)        : return "LogicalMsg";
+      (_)                         : return "Unknown";
     }
-    return "Unknown";
 };
 
 fn record_identify(RmgrId rmgr_id, u8 rmgr_info) {

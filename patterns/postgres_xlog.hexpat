@@ -1791,8 +1791,10 @@ struct XLogRecordHeader {
 
 fn format_xlog_record_header(auto hdr) {
     rmgr_info = hdr.xl_info.rmgr_info << 4;
-    return std::format("{} {}", format_rmgr_id(hdr.xl_rmid),
-      record_identify(hdr.xl_rmid, rmgr_info));
+    XLogRecPtr lsn = hdr.xl_prev + hdr.xl_tot_len;
+    return std::format("{} {} {}", hdr.xl_rmid,
+      record_identify(hdr.xl_rmid, rmgr_info),
+      format_xlogrecptr(lsn));
 };
 
 struct XLogRecord {

@@ -28,11 +28,20 @@ struct PageHeaderData {
 struct BlockIdData {
   u16 bi_hi;
   u16 bi_lo;
+} [[format("format_blk_id")]];
+
+fn format_blk_id(auto blk) {
+    auto blk_id = blk.bi_hi << 16 + blk.bi_lo;
+    return std::format("{}", blk_id);
 };
 
 struct ItemPointerData {
-  BlockIdData ip_blkid;
-  OffsetNumber ip_posid;
+  BlockIdData blkid;
+  OffsetNumber posid;
+} [[format("format_item_pointer_data")]];
+
+fn format_item_pointer_data(auto ptr) {
+    return std::format("({},{})", ptr.blkid, ptr.posid);
 };
 
 struct HeapTupleHeaderData {
@@ -47,29 +56,52 @@ struct HeapTupleHeaderData {
   u8 t_bits;
 };
 
-u8 current_lp;
-
-struct HeapTupleData {
-  $ = parent.start_address + parent.line_pointers[current_lp].lp_off;
-  auto start_address = $;
-  HeapTupleHeaderData header;
-  u8 data[parent.line_pointers[current_lp].lp_len - ($ - start_address)];
-  current_lp = current_lp + 1;
+fn relative_to_page_start(u32 pointer) {
+    auto page_start = addressof(parent.parent.parent);
+    auto offset_from_page_start = page_start + (pointer & 0x7fff);
+    // pointer_base will add pointer to the result,
+    // substract it to have the correct address
+    return offset_from_page_start - pointer;
 };
 
-bitfield ItemIdData {
-  lp_off   : 15;
-  lp_flags : 2;
-  lp_len   : 15;
+bitfield LinePointerHeader {
+  off   : 15;
+  flags : 2;
+  len   : 15;
+} [[inline, format("format_lp_header")]];
+
+fn format_lp_header(auto lp) {
+    return std::format("off: {}, len: {}", lp.off, lp.len);
+};
+
+struct HeapTupleData {
+  HeapTupleHeaderData header;
+  std::print("$: {}, lp_len: {}", $, parent.hdr.len);
+  u8 data[parent.hdr.len - sizeof(HeapTupleHeaderData)];
+}[[format("format_heap_tuple_data")]];
+
+fn format_heap_tuple_data(auto tpl) {
+    return std::format("{}", tpl.header.t_ctid);
+};
+
+struct LinePointer {
+  LinePointerHeader hdr;
+
+  if (hdr.len > 0) {
+    $ = $ - 4;
+    HeapTupleData *heap_data : u32 [[pointer_base("relative_to_page_start"), inline]];
+  }
+} [[format("format_lp")]];
+
+fn format_lp(auto lp) {
+  return std::format("{}", lp.hdr);
 };
 
 struct Page {
-  auto start_address = $;
   PageHeaderData header;
+
   // Read line pointers until we reach the start of free space
-  ItemIdData line_pointers[while (($ - start_address) < header.pd_lower)];
-  current_lp = 0;
-  HeapTupleData heap_data[std::core::member_count(line_pointers)];
+  LinePointer line_pointers[while (($ - addressof($)) < header.pd_lower)];
 } [[fixed_size(8192)]];
 
 Page pages[while (!std::mem::eof())] @$;

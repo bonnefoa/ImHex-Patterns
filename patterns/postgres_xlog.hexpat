@@ -245,6 +245,10 @@ import type.size;
 import type.time;
 
 
+fn format_xlogrecptr(auto rec_ptr) {
+    return std::format("{:X}/{:X}", rec_ptr >> 32, rec_ptr & 0xffffffff);
+};
+
 using TransactionId = u32;
 using MultiXactId = TransactionId;
 using Oid = u32;
@@ -261,16 +265,17 @@ using MultiXactOffset_PG19 = u64;
 using RmgrId;
 
 // Global variables
-u32 globalPageSize = 8192;
+u32 global_page_size = 8192;
 u32 main_fragment_length;
 // Total data length of current record
 u32 data_total;
 u8 rmgr_info;
 RmgrId rmgr_id;
 u8 current_block;
-u32 end_page;
 u16 pg_version;
-u32 segment_size;
+XLogRecPtr global_page_addr;
+
+const u32 SizeOfXLogShortPHD = 24;
 
 u32 buffer_end_addr;
 u32 requested_data;
@@ -313,10 +318,6 @@ fn is_page() {
       (_): return false;
     }
     return true;
-};
-
-fn format_xlogrecptr(auto rec_ptr) {
-    return std::format("{:X}/{:X}", rec_ptr >> 32, rec_ptr & 0xffffffff);
 };
 
 fn format_timestampTz(u64 t) {
@@ -1780,6 +1781,30 @@ struct FragmentData {
   current_block = current_block + 1;
 };
 
+fn byte_pos_to_seg_offset(auto byte_pos) {
+  u32 seg_offset;
+
+  if (byte_pos < global_page_size) {
+    // We already have a fake long header, no need to add it
+    seg_offset = byte_pos;
+  } else {
+    // Count the first page with long header
+    seg_offset = global_page_size;
+    byte_pos -= global_page_size;
+
+    // How much bytes we can have in pages with short header
+    u64 usable_bytes_in_page = global_page_size - SizeOfXLogShortPHD;
+
+    u64 full_pages = byte_pos / usable_bytes_in_page;
+    byte_pos = byte_pos % usable_bytes_in_page;
+
+    seg_offset += full_pages * global_page_size + byte_pos + SizeOfXLogShortPHD;
+  }
+  seg_offset += global_page_addr;
+
+  return seg_offset;
+};
+
 struct XLogRecordHeader {
     u32 xl_tot_len;
     if (xl_tot_len == 0) {
@@ -1788,6 +1813,9 @@ struct XLogRecordHeader {
 
     TransactionId xl_xid;
     XLogRecPtr xl_prev;
+
+    XLogRecPtr lsn = byte_pos_to_seg_offset(parent.start_address) [[hidden]];
+
     XLogRecordInfoFlags xl_info;
     RmgrId xl_rmid;
     padding[2];
@@ -1796,26 +1824,26 @@ struct XLogRecordHeader {
 
 fn format_xlog_record_header(auto hdr) {
     rmgr_info = hdr.xl_info.rmgr_info << 4;
-    auto byte_pos = addressof(parent);
-    XLogRecPtr lsn = hdr.xl_prev + hdr.xl_tot_len;
     return std::format("{} {} {}",
-      format_xlogrecptr(lsn),
-      hdr.xl_rmid,
-      record_identify(hdr.xl_rmid, rmgr_info)
+      format_xlogrecptr(hdr.lsn), hdr.xl_rmid, record_identify(hdr.xl_rmid, rmgr_info)
     );
 };
 
+
 struct XLogRecord {
     auto start_address = $;
-    XLogRecordHeader record_header;
-    auto end_address = start_address + record_header.xl_tot_len;
-    std::print(std::format("Parsed record header {} at 0x{:X}, prev {}", record_header, start_address, format_xlogrecptr(record_header.xl_prev)));
+    XLogRecordHeader hdr;
+    auto end_address = start_address + hdr.xl_tot_len;
+
+    std::print(std::format("Parsed record header {} at 0x{:X}, prev {}, len: 0x{:X}",
+      hdr, start_address, format_xlogrecptr(hdr.xl_prev), hdr.xl_tot_len));
+
 
     current_block = 0;
     data_total = 0;
     main_fragment_length = 0;
-    rmgr_id = record_header.xl_rmid;
-    rmgr_info = record_header.xl_info.rmgr_info << 4;
+    rmgr_id = hdr.xl_rmid;
+    rmgr_info = hdr.xl_info.rmgr_info << 4;
 
     FragmentHeader fragment_headers[while($ < end_address - data_total)];
     FragmentData fragment_datas[std::core::member_count(fragment_headers)];
@@ -1825,7 +1853,7 @@ struct XLogRecord {
 } [[format("format_xlog_record")]];
 
 fn format_xlog_record(auto rec) {
-    return format_xlog_record_header(rec.record_header);
+    return format_xlog_record_header(rec.hdr);
 };
 
 // XLog Page //
@@ -1854,7 +1882,7 @@ struct XLogPageHeader {
     u64 xlp_sysid;
     u32 xlp_seg_size [[format("type::impl::size_formatter")]];;;
     u32 xlp_xlog_blcksz;
-    globalPageSize = xlp_xlog_blcksz;
+    global_page_size = xlp_xlog_blcksz;
   }
 };
 
@@ -1863,7 +1891,7 @@ std::mem::Section page_content;
 struct XLogPage {
   XLogPageHeader page_header;
 
-  auto available_record_data = std::math::min(globalPageSize - sizeof(page_header), std::mem::size() - $);
+  auto available_record_data = std::math::min(global_page_size - sizeof(page_header), std::mem::size() - $);
   // First contrecord we're parsing, skip it
   if (is_first_page && page_header.xlp_info.first_is_contrecord) {
     if (page_header.xlp_rem_len > available_record_data) {
@@ -1887,11 +1915,11 @@ struct XLogPage {
     is_first_page = false;
     const str record_magic = "\xFF\xD1";
     const str version_str = str(pg_version);
-    u8 seg_size[4] @ addressof(page_header.xlp_seg_size) [[hidden]];
+    u8 page_addr[8] @ addressof(page_header.xlp_pageaddr) [[hidden]];
 
     std::mem::copy_value_to_section(record_magic, page_content, std::mem::get_section_size(page_content));
     std::mem::copy_value_to_section(version_str, page_content, std::mem::get_section_size(page_content));
-    std::mem::copy_value_to_section(seg_size, page_content, std::mem::get_section_size(page_content));
+    std::mem::copy_value_to_section(page_addr, page_content, std::mem::get_section_size(page_content));
     std::mem::set_section_size(page_content, 0x28);
   }
 
@@ -1916,12 +1944,12 @@ struct Data {
     break;
   }
 
-  u16 fake_magic;
-  u8 fake_version;
-  u32 fake_segment_size;
+  u16 fake_magic [[hidden]];
+  u8 fake_version [[hidden]];
+  XLogRecPtr fake_page_addr [[hidden]];
 
   pg_version = fake_version;
-  segment_size = fake_segment_size;
+  global_page_addr = fake_page_addr;
   std::mem::AlignTo<0x28>;
   XLogRecord records[while(std::mem::read_unsigned($, 4) > 0 && (nrecords < limitRecords || limitRecords == 0))];
   return;

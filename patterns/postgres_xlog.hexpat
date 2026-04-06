@@ -270,6 +270,7 @@ RmgrId rmgr_id;
 u8 current_block;
 u32 end_page;
 u16 pg_version;
+u32 segment_size;
 
 u32 buffer_end_addr;
 u32 requested_data;
@@ -1795,10 +1796,13 @@ struct XLogRecordHeader {
 
 fn format_xlog_record_header(auto hdr) {
     rmgr_info = hdr.xl_info.rmgr_info << 4;
+    auto byte_pos = addressof(parent);
     XLogRecPtr lsn = hdr.xl_prev + hdr.xl_tot_len;
-    return std::format("{} {} {}", hdr.xl_rmid,
-      record_identify(hdr.xl_rmid, rmgr_info),
-      format_xlogrecptr(lsn));
+    return std::format("{} {} {}",
+      format_xlogrecptr(lsn),
+      hdr.xl_rmid,
+      record_identify(hdr.xl_rmid, rmgr_info)
+    );
 };
 
 struct XLogRecord {
@@ -1857,10 +1861,9 @@ struct XLogPageHeader {
 bool is_first_page = true;
 std::mem::Section page_content;
 struct XLogPage {
-  auto start = $;
   XLogPageHeader page_header;
 
-  auto available_record_data = std::math::min(globalPageSize - ($ - start), std::mem::size() - $);
+  auto available_record_data = std::math::min(globalPageSize - sizeof(page_header), std::mem::size() - $);
   // First contrecord we're parsing, skip it
   if (is_first_page && page_header.xlp_info.first_is_contrecord) {
     if (page_header.xlp_rem_len > available_record_data) {
@@ -1883,9 +1886,12 @@ struct XLogPage {
   if (is_first_page) {
     is_first_page = false;
     const str record_magic = "\xFF\xD1";
-    const str version = str(pg_version);
+    const str version_str = str(pg_version);
+    u8 seg_size[4] @ addressof(page_header.xlp_seg_size) [[hidden]];
+
     std::mem::copy_value_to_section(record_magic, page_content, std::mem::get_section_size(page_content));
-    std::mem::copy_value_to_section(version, page_content, std::mem::get_section_size(page_content));
+    std::mem::copy_value_to_section(version_str, page_content, std::mem::get_section_size(page_content));
+    std::mem::copy_value_to_section(seg_size, page_content, std::mem::get_section_size(page_content));
     std::mem::set_section_size(page_content, 0x28);
   }
 
@@ -1912,7 +1918,10 @@ struct Data {
 
   u16 fake_magic;
   u8 fake_version;
+  u32 fake_segment_size;
+
   pg_version = fake_version;
+  segment_size = fake_segment_size;
   std::mem::AlignTo<0x28>;
   XLogRecord records[while(std::mem::read_unsigned($, 4) > 0 && (nrecords < limitRecords || limitRecords == 0))];
   return;

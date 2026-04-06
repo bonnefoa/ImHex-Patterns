@@ -53,7 +53,8 @@ struct HeapTupleHeaderData {
   u16 t_infomask;
   u8 t_hoff;
   // Todo: bitmaps may not be present
-  u8 t_bits;
+  auto natts = t_infomask2 & 0x7FF;
+  u8 t_bits[natts / 8];
 };
 
 fn relative_to_page_start(u32 pointer) {
@@ -76,8 +77,8 @@ fn format_lp_header(auto lp) {
 
 struct HeapTupleData {
   HeapTupleHeaderData header;
-  std::print("$: {}, lp_len: {}", $, parent.hdr.len);
-  u8 data[parent.hdr.len - sizeof(HeapTupleHeaderData)];
+  std::mem::AlignTo<8>;
+  u8 data[parent.hdr.len - ($ - addressof(header))];
 }[[format("format_heap_tuple_data")]];
 
 fn format_heap_tuple_data(auto tpl) {

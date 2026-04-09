@@ -44,6 +44,13 @@ fn format_item_pointer_data(auto ptr) {
     return std::format("({},{})", ptr.blkid, ptr.posid);
 };
 
+enum LP_FLAGS : u8 {
+    UNUSED = 0,
+    NORMAL = 1,
+    REDIRECT = 2,
+    DEAD = 3,
+};
+
 struct HeapTupleHeaderData {
   TransactionId t_xmin;
   TransactionId t_xmax;
@@ -71,8 +78,18 @@ bitfield LinePointerHeader {
   len   : 15;
 } [[inline, format("format_lp_header")]];
 
+fn lp_flags_to_str(auto lp_flags) {
+  match (lp_flags) {
+    (LP_FLAGS::UNUSED): return "UNUSED";
+    (LP_FLAGS::NORMAL): return "NORMAL";
+    (LP_FLAGS::REDIRECT): return "REDIRECT";
+    (LP_FLAGS::DEAD): return "DEAD";
+    (_): return "UNKNOWN";
+  }
+};
+
 fn format_lp_header(auto lp) {
-    return std::format("off: {}, len: {}", lp.off, lp.len);
+    return std::format("off: {}, {}, len: {}", lp.off, lp_flags_to_str(lp.flags), lp.len);
 };
 
 struct HeapTupleData {

@@ -266,7 +266,7 @@ using RmgrId;
 
 // Global variables
 u32 global_page_size = 8192;
-u32 main_fragment_length;
+u32 main_data_length;
 // Total data length of current record
 u32 data_total;
 u8 rmgr_info;
@@ -1718,7 +1718,7 @@ struct MainFragment {
       }
       (_): std::error(std::format("rmgrid not handled {}", id));
     }
-    padding[main_fragment_length - ($ - start_address)];
+    padding[main_data_length - ($ - start_address)];
 } [[inline]];
 
 struct BlockHeader {
@@ -1746,11 +1746,11 @@ struct FragmentHeader {
     u8 id;
     if (id == XLR_BLOCK_ID_DATA_SHORT) {
       u8 data_length;
-      main_fragment_length = data_length;
+      main_data_length = data_length;
       data_total += data_length;
     } else if (id == XLR_BLOCK_ID_DATA_LONG) {
       u32 data_length;
-      main_fragment_length = data_length;
+      main_data_length = data_length;
       data_total += data_length;
     } else if (id == XLR_BLOCK_ID_ORIGIN) {
       u16 record_origin;
@@ -1841,7 +1841,7 @@ struct XLogRecord {
 
     current_block = 0;
     data_total = 0;
-    main_fragment_length = 0;
+    main_data_length = 0;
     rmgr_id = hdr.xl_rmid;
     rmgr_info = hdr.xl_info.rmgr_info << 4;
 

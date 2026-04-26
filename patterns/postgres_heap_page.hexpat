@@ -51,13 +51,37 @@ enum LP_FLAGS : u8 {
     DEAD = 3,
 };
 
+bitfield t_infomask_flags {
+  heap_hasnull         :1;
+  heap_hasvarwidth     :1;
+  heap_hasexternal     :1;
+  heap_hasoid          :1;
+  heap_xmax_keyshr_lock:1;
+  heap_combo_cid       :1;
+  heap_xmax_excl_lock  :1;
+  heap_xmax_lock_only  :1;
+  heap_xmin_committed  :1;
+  heap_xmin_invalid    :1;
+  heap_xmax_committed  :1;
+  heap_xmax_invalid    :1;
+  heap_xmax_is_multi   :1;
+  heap_updated         :1;
+  heap_moved_off       :1;
+  heap_moved_in        :1;
+} [[inline]];
+
+struct t_infomask {
+  t_infomask_flags flags;
+  u16 visibility_bits;
+};
+
 struct HeapTupleHeaderData {
   TransactionId t_xmin;
   TransactionId t_xmax;
   u32 t_cid;
   ItemPointerData t_ctid;
   u16 t_infomask2;
-  u16 t_infomask;
+  t_infomask t_infomask;
   u8 t_hoff;
   // Todo: bitmaps may not be present
   u16 natts = t_infomask2 & 0x7FF [[export]];

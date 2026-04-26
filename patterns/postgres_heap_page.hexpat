@@ -60,8 +60,8 @@ struct HeapTupleHeaderData {
   u16 t_infomask;
   u8 t_hoff;
   // Todo: bitmaps may not be present
-  auto natts = t_infomask2 & 0x7FF;
-  u8 t_bits[natts / 8];
+  u16 natts = t_infomask2 & 0x7FF [[export]];
+  u8 t_bits[1 + natts / 8];
 };
 
 fn relative_to_page_start(u32 pointer) {

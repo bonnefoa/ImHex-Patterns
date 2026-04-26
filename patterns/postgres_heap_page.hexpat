@@ -51,41 +51,43 @@ enum LP_FLAGS : u8 {
     DEAD = 3,
 };
 
-bitfield t_infomask_flags {
-  heap_hasnull         :1;
-  heap_hasvarwidth     :1;
-  heap_hasexternal     :1;
-  heap_hasoid          :1;
-  heap_xmax_keyshr_lock:1;
-  heap_combo_cid       :1;
-  heap_xmax_excl_lock  :1;
-  heap_xmax_lock_only  :1;
-  heap_xmin_committed  :1;
-  heap_xmin_invalid    :1;
-  heap_xmax_committed  :1;
-  heap_xmax_invalid    :1;
-  heap_xmax_is_multi   :1;
-  heap_updated         :1;
-  heap_moved_off       :1;
-  heap_moved_in        :1;
-} [[inline]];
+bitfield t_infomask {
+  hasnull         :1;
+  hasvarwidth     :1;
+  hasexternal     :1;
+  hasoid          :1;
+  xmax_keyshr_lock:1;
+  combo_cid       :1;
+  xmax_excl_lock  :1;
+  xmax_lock_only  :1;
+  xmin_committed  :1;
+  xmin_invalid    :1;
+  xmax_committed  :1;
+  xmax_invalid    :1;
+  xmax_is_multi   :1;
+  updated         :1;
+  moved_off       :1;
+  moved_in        :1;
+} [[fixed_size(2)]];
 
-struct t_infomask {
-  t_infomask_flags flags;
-  u16 visibility_bits;
-};
+bitfield t_infomask2 {
+  natts           : 11;
+  keys_updated    : 1;
+  hot_updated     : 1;
+  only_tuple      : 1;
+} [[fixed_size(2)]];
 
 struct HeapTupleHeaderData {
   TransactionId t_xmin;
   TransactionId t_xmax;
   u32 t_cid;
   ItemPointerData t_ctid;
-  u16 t_infomask2;
+  t_infomask2 t_infomask2;
   t_infomask t_infomask;
   u8 t_hoff;
-  // Todo: bitmaps may not be present
-  u16 natts = t_infomask2 & 0x7FF [[export]];
-  u8 t_bits[1 + natts / 8];
+  if (t_infomask.hasnull > 0) {
+    u8 t_bits[1 + t_infomask2.natts / 8];
+  }
 };
 
 fn relative_to_page_start(u32 pointer) {

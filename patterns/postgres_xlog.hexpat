@@ -946,14 +946,24 @@ struct HeapTupleHeader {
   u8 t_hoff;
 };
 
+bitfield XLogHeapUpdateFlags {
+    OLD_ALL_VISIBILTY_CLEARED  : 1;
+    NEW_ALL_VISIBILITY_CLEARED : 1;
+    CONTAINS_OLD_TUPLE         : 1;
+    CONTAINS_OLD_KEY           : 1;
+    CONTAINS_NEW_TUPLE         : 1;
+    PREFIX_FROM_OLD            : 1;
+    SUFFIX_FROM_OLD            : 1;
+};
+
 struct xl_heap_update {
   TransactionId old_xmax;
   OffsetNumber old_offnum;
   u8 old_infobits_set;
-  u8 flags;
+  XLogHeapUpdateFlags flags;
   TransactionId new_xmax;
   OffsetNumber new_offnum;
-  if (flags & (XLH_UPDATE_CONTAINS_OLD_TUPLE | XLH_UPDATE_CONTAINS_OLD_KEY)) {
+  if (flags.CONTAINS_OLD_TUPLE || flags.CONTAINS_OLD_KEY) {
     HeapTupleHeader heap_tuple_header;
     u8 heap_data[parent.parent.parent.fragment_headers[current_block].data_length - 19];
   }

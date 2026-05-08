@@ -145,7 +145,7 @@ struct Page {
   PageHeaderData header;
 
   // Read line pointers until we reach the start of free space
-  LinePointer line_pointers[while (($ - addressof($)) < header.pd_lower)];
+  LinePointer line_pointers[while (($ - addressof(header)) < header.pd_lower)];
 } [[fixed_size(8192)]];
 
 Page pages[while (!std::mem::eof())] @$;
